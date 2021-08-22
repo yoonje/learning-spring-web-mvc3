@@ -547,7 +547,7 @@ public class ValidationItemApiController {
         }
         log.info("성공 로직 실행");
         return form;
-      }
+    }
 }
 ```
 
@@ -601,11 +601,14 @@ public String home() {
 ```java
 @Data
 public class Member {
+
     private Long id;
 
     @NotEmpty
-    private String loginId; //로그인 ID @NotEmpty
-    private String name; //사용자 이름 @NotEmpty
+    private String loginId; //로그인 ID 
+    @NotEmpty
+    private String name; //사용자 이름 
+    @NotEmpty
     private String password;
 }
 ```
@@ -615,7 +618,7 @@ public class Member {
 @Repository
 public class MemberRepository {
 
-     private static Map<Long, Member> store = new HashMap<>(); //static 사용
+    private static Map<Long, Member> store = new HashMap<>(); //static 사용
 
     private static long sequence = 0L; //static 사용
     
@@ -888,10 +891,8 @@ public class HomeController {
 
     private final MemberRepository memberRepository;
 
-
     @GetMapping("/")
-    public String homeLogin(@CookieValue(name = "memberId", required = false) Long memberId,
-  Model model) {
+    public String homeLogin(@CookieValue(name = "memberId", required = false) Long memberId, Model model) {
         if (memberId == null) {
               return "home";
         }
@@ -904,7 +905,7 @@ public class HomeController {
         
         model.addAttribute("member", loginMember);
         return "loginHome";
-      }
+    }
 
     @PostMapping("/logout")
     public String logout(HttpServletResponse response) {
@@ -1006,7 +1007,8 @@ public String loginV3(@Valid @ModelAttribute LoginForm form, BindingResult bindi
 
     //로그인 성공 처리
     //세션이 있으면 있는 세션 반환, 없으면 신규 세션 생성
-    HttpSession session = request.getSession(); //세션에 로그인 회원 정보 보관
+    HttpSession session = request.getSession(); 
+    //세션에 로그인 회원 정보 보관
     session.setAttribute(SessionConst.LOGIN_MEMBER, loginMember);
 
     return "redirect:/";
