@@ -1113,10 +1113,520 @@ public class SessionInfoController {
 로그인 처리2
 =======
 
+### 서블릿 필터
+
+
+##### 서블릿 필터 소개
+- 필터는 `서블릿`이 지원하는 수문장
+- 상품 관리 컨트롤러에서 로그인 여부를 체크하는 로직을 하나하나 작성하는 것은 매우 불편하므로 애플리케이션 여러 로직에서 공통으로 관심이 있는 있는 것을 `공통 관심사`로 처리하는 것이 좋음
+- 스프링의 AOP로도 공통 관심사를 해결할 수 잇지만, 웹과 관련된 공통 관심사는 지금부터 설명할 `서블릿 필터` 또는 `스프링 인터셉터`를 사용하는 것이 좋음
+- 서블릿 필터나 스프링 인터셉터는 HttpServletRequest를 제공
+- 스프링 인터셉터는 없지만 chain.doFilter(request, response); 를 호출해서 다음 필터 또는 서블릿을 호출할 때 request, response 를 다른 객체로 바꿀 수 있는 기능을 제공
+- 필터 흐름
+  - HTTP 요청 ->WAS-> 필터 -> 서블릿 -> 컨트롤러
+- 필터 제한
+  - HTTP 요청 -> WAS -> 필터 -> 서블릿 -> 컨트롤러 // 로그인 사용자
+  - HTTP 요청 -> WAS -> 필터(적절하지 않은 요청이라 판단, 서블릿 호출X) // 비 로그인 사용자
+- 필터 체인
+  - HTTP 요청 -> WAS -> 필터1 -> 필터2 -> 필터3 -> 서블릿 -> 컨트롤러
+
+
+##### 필터 인터페이스
+- 필터 인터페이스
+```java
+public interface Filter {
+      public default void init(FilterConfig filterConfig) throws ServletException
+  {}
+      public void doFilter(ServletRequest request, ServletResponse response,
+              FilterChain chain) throws IOException, ServletException;
+      public default void destroy() {}
+}
+```
+- init(): 필터 초기화 메서드, 서블릿 컨테이너가 생성될 때 호출
+- doFilter(): 고객의 요청이 올 때 마다 해당 메서드가 호출, 필터의 로직을 구현
+- destroy(): 필터 종료 메서드, 서블릿 컨테이너가 종료될 때 호출
+
+##### 모든 요청을 로그로 남기는 서블릿 필터 예시
+- LogFilter
+```java
+@Slf4j
+public class LogFilter implements Filter {
+
+    @Override
+    public void init(FilterConfig filterConfig) throws ServletException {
+        log.info("log filter init"); 
+    }
+        
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+
+    HttpServletRequest httpRequest = (HttpServletRequest) request; 
+    String requestURI = httpRequest.getRequestURI();
+
+    String uuid = UUID.randomUUID().toString();
+
+        try {
+            log.info("REQUEST [{}][{}]", uuid, requestURI); 
+            chain.doFilter(request, response); // 필터가 있으면 필터를 호출하고, 필터가 없으면 서블릿을 호출
+        } catch (Exception e) {
+            throw e;
+        } finally {
+            log.info("RESPONSE [{}][{}]", uuid, requestURI);
+        } 
+    }
+
+    @Override
+    public void destroy() {
+        log.info("log filter destroy"); 
+    }
+}
+```
+- WebConfig
+```java
+@Configuration
+public class WebConfig {
+        
+    @Bean
+    public FilterRegistrationBean logFilter() {
+        FilterRegistrationBean<Filter> filterRegistrationBean = new FilterRegistrationBean<>();
+        filterRegistrationBean.setFilter(new LogFilter()); //  등록할 필터를 지정
+        filterRegistrationBean.setOrder(1); // 필터 체인의 순서 설정
+        filterRegistrationBean.addUrlPatterns("/*"); // 필터를 적용할 URL 패턴을 지정
+        return filterRegistrationBean;
+    } 
+}
+```
+
+##### 인증을 체크하는 서블릿 필터 예시
+- LoginCheckFilter
+```java
+@Slf4j
+public class LoginCheckFilter implements Filter {
+
+    // 화이트 리스트 경로는 인증과 무관하게 항상 허용
+    private static final String[] whitelist = {"/", "/members/add", "/login", "/logout","/css/*"};
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+
+        HttpServletRequest httpRequest = (HttpServletRequest) request; 
+        String requestURI = httpRequest.getRequestURI();
+        HttpServletResponse httpResponse = (HttpServletResponse) response;
+
+        try {
+
+            log.info("인증 체크 필터 시작 {}", requestURI); 
+
+            // 화이트 리스트를 제외한 모든 경우에 인증 체크 로직    
+            if (isLoginCheckPath(requestURI)) {
+                log.info("인증 체크 로직 실행 {}", requestURI); 
+                HttpSession session = httpRequest.getSession(false); 
+                
+                if (session == null || session.getAttribute(SessionConst.LOGIN_MEMBER) == null) {
+                    
+                    log.info("미인증 사용자 요청 {}", requestURI);
+                    
+                    // requestURL를 넘겨 주면서 로그인으로 redirect
+                    httpResponse.sendRedirect("/login?redirectURL=" + requestURI);
+                    
+                    return; //여기가 중요, 미인증 사용자는 다음으로 진행하지 않고 끝!
+                }
+                
+                chain.doFilter(request, response); 
+            } catch (Exception e) {
+                throw e; //예외 로깅 가능 하지만, 톰캣까지 예외를 보내주어야 함 
+            } 
+            finally {
+                log.info("인증 체크 필터 종료 {}", requestURI); 
+            }
+        }
+
+    /**
+    * 화이트 리스트의 경우 인증 체크X
+    */
+    private boolean isLoginCheckPath(String requestURI) {
+        return !PatternMatchUtils.simpleMatch(whitelist, requestURI);
+    }
+}
+```
+- WebConfig
+```java
+@Bean
+public FilterRegistrationBean loginCheckFilter() {
+    FilterRegistrationBean<Filter> filterRegistrationBean = new FilterRegistrationBean<>();
+    filterRegistrationBean.setFilter(new LoginCheckFilter()); // 로그인 필터를 등록
+    filterRegistrationBean.setOrder(2); // 필터 체인 순서
+    filterRegistrationBean.addUrlPatterns("/*"); // 모든 요청에 로그인 필터 적용
+    return filterRegistrationBean;
+}
+```
+- LoginController
+```java
+@PostMapping("/login")
+public String loginV4(@Valid @ModelAttribute LoginForm form, BindingResult bindingResult, @RequestParam(defaultValue = "/") String redirectURL, HttpServletRequest request) {
+    if (bindingResult.hasErrors()) { 
+        return "login/loginForm";
+    }
+    
+    Member loginMember = loginService.login(form.getLoginId(), form.getPassword());
+    
+    log.info("login? {}", loginMember); 
+    if (loginMember == null) {    
+        bindingResult.reject("loginFail", "아이디 또는 비밀번호가 맞지 않습니다.");
+        return "login/loginForm";
+    }
+    
+    //로그인 성공 처리
+    //세션이 있으면 있는 세션 반환, 없으면 신규 세션 생성
+    HttpSession session = request.getSession(); //세션에 로그인 회원 정보 보관
+    session.setAttribute(SessionConst.LOGIN_MEMBER, loginMember);
+    
+    //redirectURL 적용
+    return "redirect:" + redirectURL;
+}
+ 
+```
+
+### 스프링 인터셉터
+
+##### 스프링 인터셉터 소개
+- 스프링 인터셉터는 `스프링 웹 MVC`가 지원하는 수문장
+- 서블릿 필터와 같이 웹과 관련된 공통 관심 사항을 효과적으로 해결할 수 있는 기술
+- 스프링 인터셉터는 디스패처 서블릿(MVC의 시작점)과 컨트롤러 사이에서 컨트롤러 호출 직전에 호출 
+- 스프링 인터셉터 흐름
+  - HTTP 요청 ->WAS-> 필터 -> 서블릿 -> 스프링 인터셉터 -> 컨트롤러
+- 스프링 인터셉터 제한
+  - HTTP 요청 -> WAS -> 필터 -> 서블릿 -> 스프링 인터셉터 -> 컨트롤러 // 로그인 사용자
+  - HTTP 요청 -> WAS -> 필터 -> 서블릿 -> 스프링 인터셉터(적절하지 않은 요청이라 판단, 컨트롤러 호출 X) // 비 로그인 사용자
+- 스프링 인터셉터 체인
+  - HTTP 요청 -> WAS -> 필터 -> 서블릿 -> 인터셉터1 -> 인터셉터2 -> 컨트롤러
+
+##### 스프링 인터셉터 인터페이스
+- 스프링 인터셉터 인터페이스
+```java
+public interface HandlerInterceptor {
+    
+    default boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {}
+
+    default void postHandle(HttpServletRequest request, HttpServletResponse  response, Object handler, @Nullable ModelAndView modelAndView) throws Exception {}
+
+    default void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, @Nullable Exception ex) throws Exception {}
+}
+```
+- preHandle: 컨트롤러 호출 전에 호출
+- postHandle: 컨트롤러 호출 후에 호출
+- afterCompletion: 뷰가 렌더링 된 이후에 호출
+- 특징
+  - 서블릿 필터의 경우 단순하게 doFilter() 하나만 제공되지만, 인터셉터는 컨트롤러 호출 전(preHandle), 호출 후(postHandle), 요청 완료 이후(afterCompletion)와 같이 단계적으로 잘 세분화
+  - 서블릿 필터의 경우 단순히 request , response 만 제공했지만, 인터셉터는 어떤 컨트롤러( handler )가 호출되는지 호출 정보도 받을 수 있음
+
+##### 스프링 인터셉터 예외
+- preHandle: 컨트롤러에서 예외가 발생해도 preHandle 은 이미 호출된 상태
+- postHandle: 컨트롤러에서 예외가 발생하면 postHandle 은 호출되지 않음
+- afterCompletion: afterCompletion 은 `항상 호출`
+- 특징
+  - 예외가 발생하면 postHandle() 는 호출되지 않으므로 예외와 무관하게 공통 처리를 하려면 afterCompletion() 을 사용
+
+##### 모든 요청을 로그로 남기는 스프링 인터셉터 예시
+- LogInterceptor
+```java
+@Slf4j
+public class LogInterceptor implements HandlerInterceptor {
+
+    public static final String LOG_ID = "logId";
+    
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        
+        String requestURI = request.getRequestURI(); 
+        String uuid = UUID.randomUUID().toString();
+        request.setAttribute(LOG_ID, uuid); // 스프링 인터셉터는 호출 시점이 완전히 분리되어 request에 담아서 넘겨줘야함
+
+        //@RequestMapping: HandlerMethod
+        //정적 리소스: ResourceHttpRequestHandler 
+        if (handler instanceof HandlerMethod) {
+            HandlerMethod hm = (HandlerMethod) handler; //호출할 컨트롤러 메서드의 모든 정보가 포함되어 있음
+        }
+        
+        log.info("REQUEST [{}][{}][{}]", uuid, requestURI, handler);
+        return true; 
+    }
+
+    @Override
+    public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) throws Exception {
+        log.info("postHandle [{}]", modelAndView); 
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
+        
+        String requestURI = request.getRequestURI();
+        String logId = (String)request.getAttribute(LOG_ID); 
+        log.info("RESPONSE [{}][{}]", logId, requestURI);
+        if (ex != null) {
+            log.error("afterCompletion error!!", ex); 
+        }
+    } 
+}
+```
+- WebConfig
+```java
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new LogInterceptor()) // 인터셉터 등록
+                .order(1) // 인터셉터의 호출 순서 지정
+                .addPathPatterns("/**") // 인터셉터를 적용할 URL 패턴
+                .excludePathPatterns("/css/**", "/*.ico", "/error"); // 인터셉터에서 제외할 URL 패턴
+    } 
+}
+```
+
+##### 인증을 체크하는 스프링 인터셉터 예시
+- LoginCheckInterceptor
+```java
+@Slf4j
+public class LoginCheckInterceptor implements HandlerInterceptor {
+    
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        String requestURI = request.getRequestURI(); log.info("인증 체크 인터셉터 실행 {}", requestURI);
+        HttpSession session = request.getSession(false);
+        
+        if (session == null || session.getAttribute(SessionConst.LOGIN_MEMBER) == null) {
+            log.info("미인증 사용자 요청");
+
+            //로그인으로 redirect 
+            response.sendRedirect("/login?redirectURL=" + requestURI); 
+            return false;
+        }
+    }
+}
+```
+- WebConfig
+```java
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new LogInterceptor()) 
+                .order(1)
+                .addPathPatterns("/**") 
+                .excludePathPatterns("/css/**", "/*.ico", "/error");
+
+        registry.addInterceptor(new LoginCheckInterceptor()) 
+                .order(2)
+                 .addPathPatterns("/**")
+                 .excludePathPatterns("/", "/members/add", "/login", "/logout", "/css/**", "/*.ico", "/error");
+    }
+}
+```
+
+##### ArgumentResolver를 활용하여 인증을 체크하는 스프링 인터셉터 예시
+- HomeController
+```java
+@GetMapping("/")
+public String homeLoginV3ArgumentResolver(@Login Member loginMember, Model model) {
+    //세션에 회원 데이터가 없으면 home 
+    if (loginMember == null) {
+          return "home";
+    }
+    //세션이 유지되면 로그인으로 이동 
+    model.addAttribute("member", loginMember); 
+    return "loginHome";
+}
+```
+- @Login 애노테이션
+```java
+@Target(ElementType.PARAMETER) // 파라미터에만 사용
+@Retention(RetentionPolicy.RUNTIME) // 런타임까지 애노테이션 정보가 남아있음
+public @interface Login {
+}
+```
+- LoginMemberArgumentResolver
+```java
+@Slf4j
+public class LoginMemberArgumentResolver implements HandlerMethodArgumentResolver {
+
+    // @Login 애노테이션이 있으면서 Member 타입이면 해당 ArgumentResolver 가 사용
+    @Override
+    public boolean supportsParameter(MethodParameter parameter) { 
+        log.info("supportsParameter 실행");
+        boolean hasLoginAnnotation = parameter.hasParameterAnnotation(Login.class); 
+        boolean hasMemberType = Member.class.isAssignableFrom(parameter.getParameterType());
+        return hasLoginAnnotation && hasMemberType;
+    }
+    
+    // 컨트롤러 호출 직전에 호출 되어서 필요한 파라미터 정보를 생성, 세션에 있는 로그인 회원 정보인 member 객체를 찾아서 반환
+    @Override
+    public Object resolveArgument(MethodParameter parameter, ModelAndViewContainer mavContainer, NativeWebRequest webRequest, WebDataBinderFactory binderFactory) throws Exception {
+
+        log.info("resolveArgument 실행");
+        
+        HttpServletRequest request = (HttpServletRequest) webRequest.getNativeRequest();
+        HttpSession session = request.getSession(false); 
+        
+        if (session == null) {
+              return null;
+        }
+        
+        return session.getAttribute(SessionConst.LOGIN_MEMBER); 
+    }
+}
+```
+- WebConfig
+```java
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+
+    // LoginMemberArgumentResolver 등록
+    @Override
+    public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
+        resolvers.add(new LoginMemberArgumentResolver()); 
+    }
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new LogInterceptor()) 
+                .order(1)
+                .addPathPatterns("/**") 
+                .excludePathPatterns("/css/**", "/*.ico", "/error");
+
+        registry.addInterceptor(new LoginCheckInterceptor()) 
+                .order(2)
+                 .addPathPatterns("/**")
+                 .excludePathPatterns("/", "/members/add", "/login", "/logout", "/css/**", "/*.ico", "/error");
+    }
+}
+```
 
 예외 처리와 오류 페이지
 =======
 
+### 서블릿 예외 처리
+
+##### 서블릿 예외 처리 - 시작
+- 자바
+  - 자바의 메인 메서드를 직접 실행하는 경우 main 이라는 이름의 쓰레드가 실행
+  - 외를 잡지 못하고 처음 실행한 main() 메서드를 넘어서 예외가 던져지면, 예외 정보를 남기고 해당 쓰레드는 종료
+- 웹 애플리케이션
+  - 사용자 요청 별로 `별도의 쓰레드가 할당되고`, 서블릿 컨테이너 안에서 실행
+  - WAS(여기까지 전파) <- 필터 <- 서블릿 <- 인터셉터 <- 컨트롤러(예외발생)
+  - WAS 까지 예외가 전달되면 기본으로 HTTP 500번을 리턴
+  - HttpServletResponse 가 제공하는 sendError 라는 메서드를 사용해서 강제로 특정 오류를 발생시킬 수 있음
+- 스프링 부트가 제공하는 기본 예외 페이지 프로퍼티에서 끄기
+  - server.error.whitelabel.enabled=false
+
+##### 서블릿 예외 처리 - 오류 화면 제공
+- 서블릿 예외 페이지
+  - 서블릿은 오류 화면 기능을 제공
+  - Exception (예외)가 발생해서 서블릿 밖으로 전달되거나 또는 response.sendError() 가 호출 되었을 때 각각의 상황에 맞춘 오류 처리 기능을 제공
+- 서블릿 오류 페이지 등록
+```java
+@Component
+public class WebServerCustomizer implements
+WebServerFactoryCustomizer<ConfigurableWebServerFactory> {
+    @Override
+    public void customize(ConfigurableWebServerFactory factory) {
+
+        // NOT_FOUND 일 때 호출할 컨트롤러
+        ErrorPage errorPage404 = new ErrorPage(HttpStatus.NOT_FOUND, "/error- page/404")
+
+        // INTERNAL_SERVER_ERROR 일 때 호출할 컨트롤러
+        ErrorPage errorPage500 = new ErrorPage(HttpStatus.INTERNAL_SERVER_ERROR, "/error-page/500");
+
+        // RuntimeException 일 때 호출할 컨트롤러
+        ErrorPage errorPageEx = new ErrorPage(RuntimeException.class, "/error- page/500");
+
+        factory.addErrorPages(errorPage404, errorPage500, errorPageEx); }
+}
+```
+- 오류 페이지 컨트롤러
+```java
+@Slf4j
+@Controller
+public class ErrorPageController {
+    
+    @RequestMapping("/error-page/404")
+    public String errorPage404(HttpServletRequest request, HttpServletResponse response) {
+        log.info("errorPage 404");
+        return "error-page/404"; 
+    }
+    
+    @RequestMapping("/error-page/500")
+    public String errorPage500(HttpServletRequest request, HttpServletResponse response) {
+        log.info("errorPage 500");
+        return "error-page/500"; 
+    }
+
+}
+```
+- 404 뷰
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> 
+<head>
+    <meta charset="utf-8"> 
+</head>
+<body>
+    <div class="container" style="max-width: 600px"> 
+        <div class="py-5 text-center">
+            <h2>404 오류 화면</h2> 
+        </div>
+        <div>
+            <p>오류 화면 입니다.</p>
+        </div>
+        <hr class="my-4">
+    </div> <!-- /container -->
+</body>
+</html>
+````
+- 500 뷰
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> 
+<head>
+    <meta charset="utf-8"> 
+</head>
+<body>
+    <div class="container" style="max-width: 600px"> 
+        <div class="py-5 text-center">
+             <h2>500 오류 화면</h2>
+        </div>
+        <div>
+            <p>오류 화면 입니다.</p> 
+        </div>
+            <hr class="my-4">
+        </div> 
+</body>
+</html>
+```
+- 오류 페이지 요청 흐름
+  - `WAS `/error-page/500` 다시 요청 -> 필터 -> 서블릿 -> 인터셉터 -> 컨트롤러(/error-page/ 500) -> View`
+- 예외 발생 요청 흐름
+  - `WAS(여기까지 전파) <- 필터 <- 서블릿 <- 인터셉터 <- 컨트롤러(예외발생)`
+- 오류 정보 넘기기
+  - request 의 attribute 에 추가해서 넘겨줄 수 있음
+  - RequestDispatcher 상수로 정의 되어 있는 정보 활용
+    - javax.servlet.error.exception: 예외 
+    - javax.servlet.error.exception_type: 예외 타입 
+    - javax.servlet.error.message: 오류 메시지 
+    - javax.servlet.error.request_uri: 클라이언트 요청 URI 
+    - javax.servlet.error.servlet_name: 오류가 발생한 서블릿 이름 
+    - javax.servlet.error.status_code: HTTP 상태 코드
+
+
+##### 서블릿 예외 처리 - 필터
+
+
+##### 서블릿 예외 처리 - 인터셉터
+
+
+### 스프링 부트 오류 페이지
+
+#####
 
 API 예외 처리
 =======
