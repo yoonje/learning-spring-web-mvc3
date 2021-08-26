@@ -1603,10 +1603,9 @@ public class ErrorPageController {
 </body>
 </html>
 ```
-- 오류 페이지 요청 흐름
-  - `WAS `/error-page/500` 다시 요청 -> 필터 -> 서블릿 -> 인터셉터 -> 컨트롤러(/error-page/ 500) -> View`
-- 예외 발생 요청 흐름
+- 예외 발생과 오류 페이지 요청 흐름
   - `WAS(여기까지 전파) <- 필터 <- 서블릿 <- 인터셉터 <- 컨트롤러(예외발생)`
+  - `WAS `/error-page/500` 다시 요청 -> 필터 -> 서블릿 -> 인터셉터 -> 컨트롤러(/error-page/ 500) -> View`
 - 오류 정보 넘기기
   - request 의 attribute 에 추가해서 넘겨줄 수 있음
   - RequestDispatcher 상수로 정의 되어 있는 정보 활용
@@ -1619,14 +1618,67 @@ public class ErrorPageController {
 
 
 ##### 서블릿 예외 처리 - 필터
-
+- 예외 발생과 오류 페이지 요청 흐름과 문제점
+  - `WAS(여기까지 전파) <- 필터 <- 서블릿 <- 인터셉터 <- 컨트롤러(예외발생)`
+  - `WAS `/error-page/500` 다시 요청 -> 필터 -> 서블릿 -> 인터셉터 -> 컨트롤러(/error-page/ 500) -> View`
+  - 오류가 발생하면 오류 페이지를 출력하기 위해 WAS 내부에서 다시 한번 호출이 발생하고 서블릿, 인터셉터도 모두 다시 호출
+  - 클라이언트로 부터 발생한 정상 요청인지, 아니면 오류 페이지를 출력하기 위한 내부 요청인지 구분하여 중복 호출 방지 필요
+- DispatcherType: 필터가 제공하는 요청의 종류
+  - `REQUEST(기본값)`: 클라이언트 요청
+  - ERROR: 오류 요청
+  - FORWARD: MVC에서 배웠던 서블릿에서 다른 서블릿이나 JSP를 호출할 때 RequestDispatcher.forward(request, response);
+  - INCLUDE: 서블릿에서 다른 서블릿이나 JSP의 결과를 포함할 때 RequestDispatcher.include(request, response);
+  - ASYNC: 서블릿 비동기 호출
 
 ##### 서블릿 예외 처리 - 인터셉터
-
+- 예외 발생과 오류 페이지 요청 흐름과 문제점
+  - `WAS(여기까지 전파) <- 필터 <- 서블릿 <- 인터셉터 <- 컨트롤러(예외발생)`
+  - `WAS `/error-page/500` 다시 요청 -> 필터 -> 서블릿 -> 인터셉터 -> 컨트롤러(/error-page/ 500) -> View`
+  - 오류가 발생하면 오류 페이지를 출력하기 위해 WAS 내부에서 다시 한번 호출이 발생하고 서블릿, 인터셉터도 모두 다시 호출
+- excludePathPatterns
+  - 인터셉터는 경로 정보로 중복 호출 제거( excludePathPatterns("/error-page/**")
 
 ### 스프링 부트 오류 페이지
 
-#####
+
+##### 스프링 부트 에러 페이지
+- 기본 에러 페이지
+  - 스프링 부트는 ErrorPageController와 ErrorPage를 추가할 필요없이 기본 에러 페이지를 제공
+  - ErrorPage 를 자동으로 등록 -> /error 라는 경로로 기본 오류 페이지를 설정
+  - BasicErrorController 라는 스프링 컨트롤러를 자동으로 등록
+- 오류 페이지 등록
+  - 개발자는 오류 페이지 화면만 `BasicErrorController`가 제공하는 룰과 우선순위에 따라서 등록
+  - 정적 HTML이면 정적 리소스, 뷰 템플릿을 사용해서 동적으로 오류 화면을 만들고 싶으면 뷰 템플릿 경로에 오류 페이지 파일을 만들어서 넣어두기만 하면 됨
+- HTTP 상태 코드와 오류 페이지 뷰 선택 우선 순위
+  - 뷰 템플릿
+    - resources/templates/error/500.html (구체적인 것)
+    - resources/templates/error/5xx.html (포괄적인 것)
+  - 정적 리소스
+    - resources/static/error/400.html
+    - resources/static/error/4xx.html
+  - 적용 대상이 없을 때
+    - resources/templates/error.html
+
+##### BasicErrorController가 제공하는 기본 정보
+- BasicErrorController 컨트롤러는 다음 정보를 model에 담아서 뷰에 전달
+  - timestamp: Fri Feb 05 00:00:00 KST 2021
+  - status: 400
+  - error: Bad Request
+  - exception: org.springframework.validation.BindException 
+  - trace: 예외 trace
+  - message: Validation failed for object='data'. Error count: 1 
+  - errors: Errors(BindingResult)
+  - path: 클라이언트 요청 경로 (`/hello`)
+- BasicErrorController 오류 컨트롤러에서 다음 오류 정보를 model에 포함 여부 선택
+  - 옵션 값
+    - never: 사용하지 않음
+    - always: 항상 사용
+    - on_param: 파라미터가 있을 때 사용
+  - 프로퍼티
+    - server.error.include-exception
+    - server.error.include-message
+    - server.error.include-stacktrace
+    - server.error.include-binding-errors
 
 API 예외 처리
 =======
