@@ -1682,11 +1682,704 @@ public class ErrorPageController {
 
 API 예외 처리
 =======
+### 스프링 부트 기본 오류 처리
+    
+##### BasicErrorController
+- 스프링 부트가 제공하는 기본 오류 방식
+- /error 라는 동일한 경로를 처리하는 예시
+```java
+@RequestMapping(produces = MediaType.TEXT_HTML_VALUE)
+public ModelAndView errorHtml(HttpServletRequest request, HttpServletResponse response) {}
 
+@RequestMapping
+public ResponseEntity<Map<String, Object>> error(HttpServletRequest request) {}
+```
+  - errorHtml(): MediaType.TEXT_HTML_VALUE인 클라이언트 요청의 Accept 해더 값이 text/html 인 경우에는 errorHtml() 을 호출해서 view를 제공
+  - error(): 그외 경우에 호출되고 ResponseEntity 로 HTTP Body에 JSON 데이터를 반환
+- 프로퍼티를 추가 설정 및 커스터마이징 가능
+  - server.error.path
+  - server.error.include-binding-errors
+  - server.error.include-exception
+  - server.error.include-message
+  - server.error.include-stacktrace
+
+##### Html 페이지 vs API 오류
+- 스프링 부트가 제공하는 BasicErrorController 는 HTML 페이지를 제공하는 경우에는 매우 편리 -> 4xx, 5xx 등등 모두 잘 처리
+- API 예외는 API 마다, 각각의 컨트롤러나 예외마다 서로 다른 응답 결과를 출력해야할 때가 많으므로 보통 @ExceptionHandler 를 사용
+
+### HandlerExceptionResolver(ExceptionResolver)
+
+##### 예외 처리 과정과 필요
+- 예외가 발생해서 서블릿을 넘어 WAS까지 예외가 전달되면 HTTP 상태코드가 500으로 처리
+- 발생하는 예외에 따라서 400, 404 등등 다른 상태코드로 처리하는 필요성 존재
+
+##### HandlerExceptionResolver(ExceptionResolver)
+- 스프링 MVC는 컨트롤러(핸들러) 밖으로 예외가 던져진 경우 예외를 해결하고, 동작을 새로 정의할 수 있는 방법을 제공
+- ExceptionResolver는 스프링에 끼어 넣을 수 있는데, 컨트롤러에서 Exception이 발생했을 때 afterCompletion(postHandle 수행 없음) 이후 바로 WAS에 예외가 전달된 것을 afterCompletion 전에 예외를 해결하는 역할을 함
+- MyHandlerExceptionResolver
+```java
+@Slf4j
+public class MyHandlerExceptionResolver implements HandlerExceptionResolver {
+    
+    @Override
+    public ModelAndView resolveException(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+
+        try {
+            if (ex instanceof IllegalArgumentException) {
+                log.info("IllegalArgumentException resolver to 400");
+                response.sendError(HttpServletResponse.SC_BAD_REQUEST, ex.getMessage());
+                return new ModelAndView();
+            }
+        } catch (IOException e) { 
+            log.error("resolver ex", e);
+        }
+        return null;
+    }
+}
+```
+##### HandlerExceptionResolver 의 반환 값에 따른 DispatcherServlet 의 동작 방식
+- 빈 ModelAndView: new ModelAndView() 처럼 빈 ModelAndView 를 반환하면 뷰를 렌더링 하지 않고, 정상 흐름으로 서블릿이 리턴
+- ModelAndView 지정: ModelAndView 에 View , Model 등의 정보를 지정해서 반환하면 뷰를 렌더링
+- null: null 을 반환하면, 다음 ExceptionResolver 를 찾아서 실행, 처리할 수 있는 ExceptionResolver 가 없으면 예외 처리가 안되고 기존에 발생한 예외를 서블릿 밖으로 던짐
+
+##### HandlerExceptionResolver 활용
+- 예외 상태 코드 변환: 예외를 response.sendError(xxx) 호출로 변경해서 서블릿에서 상태 코드에 따른 오류를 처리하도록 위임 이후 WAS는 서블릿 오류 페이지를 찾아서 내부 호출
+- 뷰 템플릿 처리: ModelAndView 에 값을 채워서 예외에 따른 새로운 오류 화면 뷰 렌더링 해서 고객에게 제공
+- API 응답 처리: response.getWriter().println("hello"); 처럼 HTTP 응답 바디에 직접 데이터를 넣어주는
+것도 가능하여 JSON 으로 응답하면 API 응답 처리를 할 수 있음
+
+##### ExceptionResolver 설정
+```java
+/**
+* 기본 설정을 유지하면서 추가
+*/
+@Override
+public void extendHandlerExceptionResolvers(List<HandlerExceptionResolver> resolvers) {
+    resolvers.add(new MyHandlerExceptionResolver()); // 리졸버 추가
+}
+```
+
+### HandlerExceptionResolver를 활용한 API 처리
+- UserException
+```java
+public class UserException extends RuntimeException {
+
+    public UserException() {
+        super();
+    }
+
+    public UserException(String message) {
+        super(message);
+    }
+
+    public UserException(String message, Throwable cause) {
+          super(message, cause);
+    }
+
+    public UserException(Throwable cause) {
+          super(cause);
+    }
+    
+    protected UserException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
+          super(message, cause, enableSuppression, writableStackTrace);
+      }
+}
+```
+- ApiExceptionController
+```java
+@Slf4j
+@RestController
+public class ApiExceptionController {
+
+    @GetMapping("/api/members/{id}")
+    public MemberDto getMember(@PathVariable("id") String id) {
+        
+        if (id.equals("ex")) {
+            throw new RuntimeException("잘못된 사용자");
+        }
+        
+        if (id.equals("bad")) {
+            throw new IllegalArgumentException("잘못된 입력 값"); 
+        }
+
+         if (id.equals("user-ex")) {
+             throw new UserException("사용자 오류");
+        }
+
+        return new MemberDto(id, "hello " + id);
+    }
+    
+    @Data
+    @AllArgsConstructor
+    static class MemberDto {
+        private String memberId;
+        private String name;
+    }
+}
+```
+- UserHandlerExceptionResolver
+```java
+// 직접 만든 xceptionResolver
+@Slf4j
+public class UserHandlerExceptionResolver implements HandlerExceptionResolver {
+
+     private final ObjectMapper objectMapper = new ObjectMapper();
+
+     @Override
+    public ModelAndView resolveException(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+        
+        try {
+
+            if (ex instanceof UserException) {
+                
+                log.info("UserException resolver to 400");
+                String acceptHeader = request.getHeader("accept"); response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                
+                if ("application/json".equals(acceptHeader)) { 
+                    Map<String, Object> errorResult = new HashMap<>(); 
+                    errorResult.put("ex", ex.getClass()); errorResult.put("message", ex.getMessage()); 
+                    String result = objectMapper.writeValueAsString(errorResult);
+                    response.setContentType("application/json"); 
+                    response.setCharacterEncoding("utf-8"); 
+                    response.getWriter().write(result);
+                    return new ModelAndView();
+                } else {
+                    return new ModelAndView("error/500");
+                }
+            }
+        } catch (IOException e) {
+            log.error("resolver ex", e); 
+        }
+        return null;
+    }
+}
+```
+- WebConfig
+```java
+@Override
+public void extendHandlerExceptionResolvers(List<HandlerExceptionResolver>
+resolvers) {
+    resolvers.add(new MyHandlerExceptionResolver());
+    resolvers.add(new UserHandlerExceptionResolver()); 
+}
+```
+
+### 스프링이 제공하는 ExceptionResolver
+
+##### 스프링이 기본으로 제공하는 ExceptionResolver 종류
+- ResponseStatusExceptionResolver: @ResponseStatus와 ResponseStatusException 처리 (HTTP 상태 코드를 지정)
+- DefaultHandlerExceptionResolver: 스프링 내부 기본 예외를 처리
+- ExceptionHandlerExceptionResolver: @ExceptionHandler을 처리
+
+##### ResponseStatusExceptionResolver
+- ResponseStatusExceptionResolver 는 예외에 따라서 HTTP 상태 코드를 지정해주는 역할을 하며  @ResponseStatus 가 달려있는 예외와 ResponseStatusException 예외를 처리
+- BadRequestException
+```java
+@ResponseStatus(code = HttpStatus.BAD_REQUEST, reason = "잘못된 요청 오류") 
+public class BadRequestException extends RuntimeException {
+}
+```
+- ApiExceptionController
+```java
+@GetMapping("/api/response-status-ex1") 
+public String responseStatusEx1() {
+    throw new BadRequestException();
+}
+```
+
+##### ResponseStatusExceptionResolver을 ResponseStatusException로 활용
+- @ResponseStatus 는 개발자가 직접 변경할 수 없는 예외에는 적용할 수 없음
+- 애노테이션을 사용하기 때문에 조건에 따라 동적으로 변경하는 것도 어려우므로 `ResponseStatusException 예외`를 사용
+- ApiExceptionController
+```java
+@GetMapping("/api/response-status-ex2") 
+public String responseStatusEx2() {
+    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "error.bad", new IllegalArgumentException()); // ResponseStatusException
+}
+```
+
+##### DefaultHandlerExceptionResolver
+- DefaultHandlerExceptionResolver 는 스프링 내부에서 발생하는 스프링 예외를 해결
+- 예를 들어, 파라미터 바인딩 시점에 타입이 맞지 않으면 내부에서 TypeMismatchException 이 발생하는데 DefaultHandlerExceptionResolver 는 이것을 500 오류가 아니라 HTTP 상태 코드 400 오류로 변경
+- ApiExceptionController
+```java
+// data에 문자를 보내면 TypeMismatchException 발생
+@GetMapping("/api/default-handler-ex")
+public String defaultException(@RequestParam Integer data) {
+      return "ok";
+  }
+```
+
+##### ExceptionHandlerExceptionResolver
+- `스프링은 API 예외 처리 문제`를 해결하기 위해 @ExceptionHandler 라는 애노테이션을 사용하는 매우 편리한 예외 처리 기능
+- 가장 범용적으로 활용하며 기본으로 제공하는 ExceptionResolver 중에 우선순위도 가장 높음
+- @ExceptionHandler 애노테이션을 선언하고, 해당 컨트롤러에서 처리하고 싶은 예외를 지정하면 해당 컨트롤러 처리가 끝남
+-  지정한 예외 또는 그 예외의 자식 클래스는 모두 잡을 수 있음
+- ErrorResult
+```java
+@Data
+@AllArgsConstructor
+public class ErrorResult {
+    private String code;
+    private String message;
+}
+```
+- ApiExceptionV2Controller
+```java
+@Slf4j
+@RestController
+public class ApiExceptionV2Controller {
+
+    @ResponseStatus(HttpStatus.BAD_REQUEST) 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ErrorResult illegalExHandle(IllegalArgumentException e) {
+        log.error("[exceptionHandle] ex", e);
+        return new ErrorResult("BAD", e.getMessage()); 
+    }
+    
+    @ExceptionHandler
+    public ResponseEntity<ErrorResult> userExHandle(UserException e) {
+        log.error("[exceptionHandle] ex", e);
+        ErrorResult errorResult = new ErrorResult("USER-EX", e.getMessage()); 
+        return new ResponseEntity<>(errorResult, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler // 예외 생략 가능하며 생략하면 메서드 파라미터의 예외가 지정
+    public ErrorResult exHandle(UserException e) {
+        log.error("[exceptionHandle] ex", e); 
+        return new ErrorResult("EX", "내부 오류");
+    }
+
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR) 
+    @ExceptionHandler 
+    public ErrorResult exHandle(Exception e) { // 최상위 부모 Exception으로 기본 예외 처리 지정
+        log.error("[exceptionHandle] ex", e); 
+        return new ErrorResult("EX", "내부 오류");
+    }
+
+    @ExceptionHandler({AException.class, BException.class}) // 2개 이상의 예외 처리 가능 
+    public String ex(Exception e) {
+        log.info("exception e", e); 
+    }
+
+    @GetMapping("/api2/members/{id}")
+    public MemberDto getMember(@PathVariable("id") String id) { 
+
+        if (id.equals("ex")) {
+            throw new RuntimeException("잘못된 사용자"); 
+        }
+        
+        
+        if (id.equals("bad")) {
+            throw new IllegalArgumentException("잘못된 입력 값");
+        }
+        
+        if (id.equals("user-ex")) {
+            throw new UserException("사용자 오류"); 
+        }
+
+    return new MemberDto(id, "hello " + id);
+    }
+    
+    @Data
+    @AllArgsConstructor
+    static class MemberDto {
+          private String memberId;
+          private String name;
+    }
+}
+```
+- 부모 예외 클래스와 자식 예외 클래스 간의 우선순위
+  - 자식예외가 발생하면 부모예외처리(), 자식예외처리() 둘다 호출 대상이 되는데 둘 중 더 자세한 것이 우선권을 가지므로 자식예외처리()가 호출
+  - 부모예외가 호출되면 부모예외처리()만 호출 대상이 되므로 부모 예외 처리()가 호출
+### @ControllerAdvice
+
+##### 정상 코드와 예외 처리 코드 분리
+- `@ControllerAdvice 또는 @RestControllerAdvice`를 사용하면 정상 코드와 예외 처리 코드가 하나의 컨트롤러에서 분리할 수 있음
+- @ControllerAdvice에 대상으로 지정한 여러 컨트롤러에 @ExceptionHandler, @InitBinder 기능을 부여해주는 역할을 수행
+- @RestControllerAdvice와 @ControllerAdvice의 차이는 @Controller와 @RestController의 차이와 같음
+- ExControllerAdvice
+```java
+@Slf4j
+@RestControllerAdvice // 대상을 적용하지 않아서 모든 곳에 적용
+public class ExControllerAdvice {
+
+    @ResponseStatus(HttpStatus.BAD_REQUEST) 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ErrorResult illegalExHandle(IllegalArgumentException e) {
+        log.error("[exceptionHandle] ex", e);
+        return new ErrorResult("BAD", e.getMessage()); 
+    }
+    
+    @ExceptionHandler
+    public ResponseEntity<ErrorResult> userExHandle(UserException e) {
+        log.error("[exceptionHandle] ex", e);
+        ErrorResult errorResult = new ErrorResult("USER-EX", e.getMessage()); 
+        return new ResponseEntity<>(errorResult, HttpStatus.BAD_REQUEST);
+    }
+    
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR) 
+    @ExceptionHandler
+    public ErrorResult exHandle(Exception e) {
+        log.error("[exceptionHandle] ex", e);
+         return new ErrorResult("EX", "내부 오류");
+    }
+}
+```
+- ApiExceptionV2Controller
+```java
+@Slf4j
+@RestController
+public class ApiExceptionV2Controller {
+
+    @GetMapping("/api2/members/{id}")
+    public MemberDto getMember(@PathVariable("id") String id) {
+        if (id.equals("ex")) {
+            throw new RuntimeException("잘못된 사용자");
+        }
+        
+        if (id.equals("bad")) {
+            throw new IllegalArgumentException("잘못된 입력 값"); 
+        }
+        
+        if (id.equals("user-ex")) {
+            throw new UserException("사용자 오류");
+        }
+
+        return new MemberDto(id, "hello " + id);
+    }
+
+    @Data
+    @AllArgsConstructor
+    static class MemberDto {
+        private String memberId;
+        private String name;
+    }
+}
+```
+
+##### 정상 코드와 예외 처리 코드를 특정 대상으로 분리
+- @ControllerAdvice 에 대상을 지정하지 않으면 모든 컨트롤러에 적용
+- 대상 컨트롤러 지정하는 방법
+```java
+// 어노테이션이 있는 클래스 지정
+@ControllerAdvice(annotations = RestController.class) 
+public class ExampleAdvice1 {}
+
+// 패키지 지정
+@ControllerAdvice("org.example.controllers") 
+public class ExampleAdvice2 {}
+
+// 특정 클래스 지정
+@ControllerAdvice(assignableTypes = {ControllerInterface.class, AbstractController.class})
+public class ExampleAdvice3 {}
+```
 
 스프링 타입 컨버터
 =======
 
+### Converter
+
+##### Converter
+- 문자를 숫자로 변환하거나 반대로 숫자를 문자로 변환해야하는 경우가 많은데 HTTP 요청 파라미터는 모두 문자로 처리
+- 스프링의 @ModelAttribute , @PathVariable, @RequestParm에서 자료형을 지정하면 `타입 컨버터`를 통해서 중간에서 타입을 변환
+- @Value 등으로 YML 정보 읽을 때에도 `타입 컨버터`가 사용
+- 메시지 컨버터(HttpMessageConverter)에는 컨버전 서비스가 적용되지 않음(Jackson 라이브러리 사용)
+- Converter 인터페이스
+```java
+public interface Converter<S, T> {
+        T convert(S source);
+}
+```
+- 사용자 정의 타입 컨버터
+```java
+@Getter
+@EqualsAndHashCode
+public class IpPort {
+    private String ip;
+    private int port;
+    
+    public IpPort(String ip, int port) { 
+        this.ip = ip;
+        this.port = port; 
+    }
+}
+```
+```java
+@Slf4j
+public class StringToIpPortConverter implements Converter<String, IpPort> {
+
+    @Override
+    public IpPort convert(String source) {
+        log.info("convert source={}", source); 
+        String[] split = source.split(":"); 
+        String ip = split[0];
+        int port = Integer.parseInt(split[1]);
+        return new IpPort(ip, port);
+    }
+}
+```
+```java
+@Slf4j
+public class IpPortToStringConverter implements Converter<IpPort, String> {
+    
+    @Override
+    public String convert(IpPort source) {
+        log.info("convert source={}", source);
+        return source.getIp() + ":" + source.getPort(); 
+    }
+}
+```
+##### 컨버전 서비스
+- `컨버전 서비스`: 타입 컨버터를 하나하나 직접 찾아서 타입 변환에 사용하는 것은 매우 불편하여 스프링에서 `개별 컨버터를 모아두고 그것들을 묶어서 편리하게 사용할 수 있는 기능`
+- ConversionService 인터페이스
+```java
+ public interface ConversionService {
+    
+    boolean canConvert(@Nullable Class<?> sourceType, Class<?> targetType);
+    boolean canConvert(@Nullable TypeDescriptor sourceType, TypeDescriptor targetType);
+
+    <T> T convert(@Nullable Object source, Class<T> targetType);
+    Object convert(@Nullable Object source, @Nullable TypeDescriptor sourceType, TypeDescriptor targetType);
+}
+```
+- 사용자 정의 타입 컨버터를 등록하는 컨버전 서비스
+```java
+void conversionService() {
+    // 등록
+    DefaultConversionService conversionService = new DefaultConversionService();
+    conversionService.addConverter(new StringToIntegerConverter()); 
+    conversionService.addConverter(new IntegerToStringConverter()); 
+    conversionService.addConverter(new StringToIpPortConverter()); 
+    conversionService.addConverter(new IpPortToStringConverter());
+}
+```
+```java
+Integer value = conversionService.convert("10", Integer.class)
+```
+- DefaultConversionService가 구현한 인터페이스
+  - ConversionService: 컨버터 사용에 초점
+  - ConverterRegistry: 컨버터 등록에 초점
+
+##### 스프링에 Converter 적용
+- WebConfig
+```java
+@Configuration
+  public class WebConfig implements WebMvcConfigurer {
+      
+      @Override
+      public void addFormatters(FormatterRegistry registry) {
+          registry.addConverter(new StringToIntegerConverter()); 
+          registry.addConverter(new IntegerToStringConverter()); 
+          registry.addConverter(new StringToIpPortConverter()); 
+          registry.addConverter(new IpPortToStringConverter());
+      }
+}
+```
+- ConverterController
+```java
+public class ConverterController {
+
+    @GetMapping("/hello-v2")
+    public String helloV2(@RequestParam Integer data) {
+        System.out.println("data = " + data);
+        return "ok";
+    }
+
+    @GetMapping("/ip-port")
+    public String ipPort(@RequestParam IpPort ipPort) { // RequestParamMethodArgumentResolver 에서 ConversionService 를 사용해서 타입을 변환
+    System.out.println("ipPort IP = " + ipPort.getIp()); System.out.println("ipPort PORT = " + ipPort.getPort()); return "ok";
+    }
+
+    @GetMapping("/converter-view")
+    public String converterView(Model model) {
+        model.addAttribute("number", 10000); 
+        model.addAttribute("ipPort", new IpPort("127.0.0.1", 8080)); 
+        return "converter-view";
+    }
+}
+```
+- converter-view.html
+```html
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="UTF-8">
+      <title>Title</title>
+  </head>
+<body> 
+<ul>
+      <li>${number}: <span th:text="${number}" ></span></li>
+      <li>${{ipPort}}: <span th:text="${{ipPort}}" ></span></li>
+</ul>
+</body>
+</html>
+```
+
+### Formatter
+
+##### Formatter
+- 포맷터: 컨버터의 특화된 버전으로 문자로 컨버팅할 때 `"1,000"`나 `"2021-01-01 10:50:11"`처럼 포맷을 적용하는 것
+- Converter vs Formatter
+  - Converter는 범용(객체 객체)
+  - Formatter는 문자에 특화(객체 문자, 문자 객체) + 현지화(Locale) - Converter 의 특별한 버전
+- Formatter 인터페이스
+```java
+public interface Printer<T> {
+    String print(T object, Locale locale);
+}
+
+public interface Parser<T> {
+    T parse(String text, Locale locale) throws ParseException;
+}
+
+public interface Formatter<T> extends Printer<T>, Parser<T> {
+}
+```
+- 사용자 정의 포맷터
+```java
+@Slf4j
+public class MyNumberFormatter implements Formatter<Number> {
+
+    @Override
+    public Number parse(String text, Locale locale) throws ParseException {
+        log.info("text={}, locale={}", text, locale); 
+        NumberFormat format = NumberFormat.getInstance(locale); 
+        return format.parse(text);
+    }
+
+    @Override
+    public String print(Number object, Locale locale) {
+        log.info("object={}, locale={}", object, locale);
+        return NumberFormat.getInstance(locale).format(object); 
+    }
+}
+```
+```java
+Number result = formatter.parse("1,000", Locale.KOREA);
+```
+
+##### 포맷터를 지원하는 컨버전 서비스를 통해 스프링에 Formatter 적용
+- 컨버전 서비스에는 컨버터만 등록할 수 있고, 포맷터를 등록할 수는 없음
+- DefaultFormattingConversionService 대신 `FormattingConversionService`를 사용해서 `포맷터를 지원하는 컨버전 서비스`를 사용하면 컨버전 서비스에 포맷터를 추가 가능
+- 포맷터를 지원하는 컨버전 서비스
+```java
+void formattingConversionService() {
+
+    DefaultFormattingConversionService conversionService = new DefaultFormattingConversionService();
+
+    //컨버터 등록
+    conversionService.addConverter(new StringToIpPortConverter());
+    conversionService.addConverter(new IpPortToStringConverter()); 
+    conversionService.addFormatter(new MyNumberFormatter()); // 포맷터 등록(같은 변환인 경우 우선순위는 컨버터가 우선)
+}
+```
+- ConverterController
+```java
+public class ConverterController {
+
+    @GetMapping("/hello-v2")
+    public String helloV2(@RequestParam Integer data) {
+        System.out.println("data = " + data);
+        return "ok";
+    }
+
+    @GetMapping("/ip-port")
+    public String ipPort(@RequestParam IpPort ipPort) { // RequestParamMethodArgumentResolver 에서 ConversionService 를 사용해서 타입을 변환
+    System.out.println("ipPort IP = " + ipPort.getIp()); System.out.println("ipPort PORT = " + ipPort.getPort()); return "ok";
+    }
+
+    @GetMapping("/converter-view")
+    public String converterView(Model model) {
+        model.addAttribute("number", 10000); 
+        model.addAttribute("ipPort", new IpPort("127.0.0.1", 8080)); 
+        return "converter-view";
+    }
+}
+```
+- converter-view.html
+```html
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="UTF-8">
+      <title>Title</title>
+  </head>
+<body> 
+<ul>
+      <li>${number}: <span th:text="${number}" ></span></li>
+      <li>${{ipPort}}: <span th:text="${{ipPort}}" ></span></li>
+</ul>
+</body>
+</html>
+```
+
+##### 스프링이 제공하는 기본 포맷터
+- @NumberFormat: 숫자 관련 형식 지정 포맷터 사용, NumberFormatAnnotationFormatterFactory 
+- @DateTimeFormat: 날짜 관련 형식 지정 포맷터 사용, Jsr310DateTimeFormatAnnotationFormatterFactory
+- FormatterController
+```java
+@Controller
+  public class FormatterController {
+
+    @GetMapping("/formatter/edit")
+    public String formatterForm(Model model) {
+        Form form = new Form(); form.setNumber(10000); 
+        form.setLocalDateTime(LocalDateTime.now());
+        model.addAttribute("form", form);
+        return "formatter-form"; 
+    }
+    
+    @PostMapping("/formatter/edit")
+    public String formatterEdit(@ModelAttribute Form form) {
+        return "formatter-view"; 
+    }
+    
+    @Data
+    static class Form {
+        @NumberFormat(pattern = "###,###")
+        private Integer number;
+        
+        @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+        private LocalDateTime localDateTime;
+    }
+}
+```
+- formatter-form.html
+```html
+ <!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="UTF-8">
+      <title>Title</title>
+  </head>
+<body>
+
+<form th:object="${form}" th:method="post"> 
+    number<input type="text" th:field="*{number}"><br/>
+    localDateTime <input type="text" th:field="*{localDateTime}"><br/>
+    <input type="submit"/>
+</form>
+</body>
+</html>
+```
+- formatter-view.html
+```html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="UTF-8">
+      <title>Title</title>
+  </head>
+<body> 
+    <ul>
+        <li>${form.number}: <span th:text="${form.number}" ></span></li> 
+        <li>${{form.number}}: <span th:text="${{form.number}}" ></span></li> 
+        <li>${form.localDateTime}: <span th:text="${form.localDateTime}" ></span></li>
+        <li>${{form.localDateTime}}: <span th:text="${{form.localDateTime}}" ></span></li>
+  </ul>
+</body>
+</html>
+```
 
 파일 업로드
 =======
+
+### 서블릿 파일 업로드
+
+
+### 서블릿 파일 다운로드
