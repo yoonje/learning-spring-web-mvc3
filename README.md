@@ -11,7 +11,7 @@ Table of contents
    * [예외 처리와 오류 페이지](#예외-처리와-오류-페이지)
    * [API 예외 처리](#API-예외-처리)
    * [스프링 타입 컨버터](#스프링-타입-컨버터)
-   * [파일 업로드](#파일-업로드)
+   * [파일 업로드 다운로드](#파일-업로드-다운로드)
 <!--te-->
 
 메시지 국제화
@@ -2376,10 +2376,412 @@ public class ConverterController {
 </html>
 ```
 
-파일 업로드
+파일 업로드 다운로드
 =======
 
-### 서블릿 파일 업로드
+### HTML 폼 전송 방식
+- application/x-www-form-urlencoded
+  - application/x-www-form-urlencoded 방식은 HTML 폼 데이터를 서버로 전송하는 가장 기본적인 방법
+  - HTTP Body에 문자로 username=kim&age=20와 같이 & 로 구분해서 전송
+  - 파일은 문자가 아니라 바이너리 데이터를 전송해야하므로 문자를 전송하는 이 방식으로 파일을 전송하기는 어려움
+- `multipart/form-data`
+  - 다른 종류의 여러 파일과 폼의 내용 함께 전송할 수 있는 방법
+  - 폼의 입력 결과로 생성된 HTTP 메시지를 보면 각각의 전송 항목이 `구분이 되어 있음`
+  - Content- Disposition 이라는 항목별 헤더가 추가되어 있고 여기에 부가 정보가 있음
+  - 폼의 일반 데이터는 각 항목별로 문자가 전송되고, 파일의 경우 파일 이름과 Content-Type이 추가되고 바이너리 데이터가 전송
 
+### 파일 업로드와 파일 다운로드
 
-### 서블릿 파일 다운로드
+##### 서블릿 파일 업로드 1
+- ServletUploadControllerV1
+```java
+@Slf4j
+@Controller
+@RequestMapping("/servlet/v1")
+public class ServletUploadControllerV1 {
+    
+    @GetMapping("/upload") 
+    public String newFile() { 
+        return "upload-form";
+    }
+   
+    // 업로드
+    @PostMapping("/upload")
+    public String saveFileV1(HttpServletRequest request) throws ServletException, IOException {
+        log.info("request={}", request);
+        String itemName = request.getParameter("itemName");
+        log.info("itemName={}", itemName); 
+        Collection<Part> parts = request.getParts();
+        log.info("parts={}", parts); 
+        return "upload-form";
+    } 
+}
+```
+- upload-form.html
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="utf-8"> </head>
+  <body>
+  <div class="container">
+<div class="py-5 text-center"> 
+    <h2>상품 등록 폼</h2>
+</div>
+<h4 class="mb-3">상품 입력</h4>
+<form th:action method="post" enctype="multipart/form-data"> 
+    <ul>
+        <li>상품명 <input type="text" name="itemName"></li>
+        <li>파일<input type="file" name="file" ></li> 
+    </ul>
+    <input type="submit"/>
+</form>
+</div> <!-- /container --> 
+</body>
+</html>
+```
+- 프로퍼티를 통한 멀티파트 사용 옵션 설정
+  - 사이즈 제한
+```java
+spring.servlet.multipart.max-file-size=1MB 
+spring.servlet.multipart.max-request-size=10MB
+```
+  - 멀티 파트 관련 처리(기본 true)
+```java
+spring.servlet.multipart.enabled=true
+```
+
+##### 서블릿 파일 업로드 2
+- ServletUploadControllerV2
+```java
+@Slf4j
+@Controller
+@RequestMapping("/servlet/v2")
+public class ServletUploadControllerV2 {
+
+    @Value("${file.dir}") 
+    private String fileDir;
+    
+    @GetMapping("/upload") 
+    public String newFile() { 
+        return "upload-form";
+    }
+    
+    // 업로드 및 파일 저장
+    @PostMapping("/upload")
+    public String saveFileV1(HttpServletRequest request) throws ServletException, IOException {
+        
+        log.info("request={}", request);
+        String itemName = request.getParameter("itemName"); 
+        log.info("itemName={}", itemName);
+
+        Collection<Part> parts = request.getParts(); 
+        log.info("parts={}", parts);
+         
+        for (Part part : parts) {
+            log.info("==== PART ====");
+            log.info("name={}", part.getName());
+            Collection<String> headerNames = part.getHeaderNames(); 
+             
+            for (String headerName : headerNames) {
+                log.info("header {}: {}", headerName, part.getHeader(headerName));
+            }
+            
+            //편의 메서드
+            //content-disposition; filename 
+            log.info("submittedFileName={}", part.getSubmittedFileName()); 
+            log.info("size={}", part.getSize()); //part body size
+            
+            //데이터 읽기
+            InputStream inputStream = part.getInputStream(); // Part의 전송 데이터
+            String body = StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8); 
+            log.info("body={}", body);
+
+            //파일에 저장하기
+            if (StringUtils.hasText(part.getSubmittedFileName())) { // 클라이언트가 전달한 파일명
+                String fullPath = fileDir + part.getSubmittedFileName(); 
+                log.info("파일 저장 fullPath={}", fullPath);
+                part.write(fullPath); // Part를 통해 전송된 데이터를 저장
+            }
+    }
+    return "upload-form"; 
+}
+```
+- upload-form.html
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="utf-8"> </head>
+  <body>
+  <div class="container">
+<div class="py-5 text-center"> 
+    <h2>상품 등록 폼</h2>
+</div>
+<h4 class="mb-3">상품 입력</h4>
+<form th:action method="post" enctype="multipart/form-data"> 
+    <ul>
+        <li>상품명 <input type="text" name="itemName"></li>
+        <li>파일<input type="file" name="file" ></li> 
+    </ul>
+    <input type="submit"/>
+</form>
+</div> <!-- /container --> 
+</body>
+</html>
+```
+
+##### 스프링 파일 업로드
+- 스프링은 MultipartFile 이라는 인터페이스로 멀티파트 파일을 매우 편리하게 지원
+- SpringUploadController
+```java
+@Controller
+@RequestMapping("/spring")
+public class SpringUploadController {
+    @Value("${file.dir}") private String fileDir;
+    
+    @GetMapping("/upload") 
+    public String newFile() { 
+        return "upload-form";
+    }
+    
+    @PostMapping("/upload")
+    public String saveFile(@RequestParam String itemName, @RequestParam MultipartFile file, HttpServletRequest request) throws IOException {
+        log.info("request={}", request); 
+        log.info("itemName={}", itemName); 
+        log.info("multipartFile={}", file);
+        
+        if (!file.isEmpty()) {
+            String fullPath = fileDir + file.getOriginalFilename(); // 업로드 파일 명
+            log.info("파일 저장 fullPath={}", fullPath); 
+            file.transferTo(new File(fullPath)); // 파일 저장
+        }
+        return "upload-form"; 
+    }
+}
+```
+- upload-form.html
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> <head>
+<meta charset="utf-8"> </head>
+  <body>
+  <div class="container">
+<div class="py-5 text-center"> 
+    <h2>상품 등록 폼</h2>
+</div>
+<h4 class="mb-3">상품 입력</h4>
+<form th:action method="post" enctype="multipart/form-data"> 
+    <ul>
+        <li>상품명 <input type="text" name="itemName"></li>
+        <li>파일<input type="file" name="file" ></li> 
+    </ul>
+    <input type="submit"/>
+</form>
+</div> <!-- /container --> 
+</body>
+</html>
+```
+
+### 스프링 파일 업로드 및 다운로드
+- Item
+```java
+@Data
+public class Item {
+    private Long id;
+    private String itemName;
+    private UploadFile attachFile;
+    private List<UploadFile> imageFiles;
+}
+```
+- ItemRepository
+```java
+@Repository
+public class ItemRepository {
+    private final Map<Long, Item> store = new HashMap<>();
+    private long sequence = 0L;
+    
+    public Item save(Item item) { 
+        item.setId(++sequence); 
+        store.put(item.getId(), item); 
+        return item;
+    }
+    
+    public Item findById(Long id) { 
+        return store.get(id);
+    } 
+}
+```
+- UploadFile
+```java
+@Data
+public class UploadFile {
+
+    private String uploadFileName; //  고객이 업로드한 파일명
+    private String storeFileName; // 서버 내부에서 관리하는 파일명
+    
+    public UploadFile(String uploadFileName, String storeFileName) { 
+        this.uploadFileName = uploadFileName;
+        this.storeFileName = storeFileName;
+    } 
+}
+```
+- FileStore
+```java
+@Component
+public class FileStore {
+    
+    @Value("${file.dir}") 
+    private String fileDir;
+    
+    public String getFullPath(String filename) {
+        return fileDir + filename;
+    }
+    
+    public List<UploadFile> storeFiles(List<MultipartFile> multipartFiles) throws IOException {
+        List<UploadFile> storeFileResult = new ArrayList<>();
+
+        for (MultipartFile multipartFile : imageFiles) {
+            if (!imageFile.isEmpty()) { 
+                storeFileResult.add(storeFile(multipartFile));
+            } 
+        }
+        return storeFileResult;
+    }
+    
+    public UploadFile storeFile(MultipartFile multipartFile) throws IOException {
+        
+        if (multipartFile.isEmpty()) { 
+            return null;
+        }
+        
+        String originalFilename = multipartFile.getOriginalFilename(); 
+        String storeFileName = createStoreFileName(originalFilename); 
+        multipartFile.transferTo(new File(getFullPath(storeFileName))); 
+        return new UploadFile(originalFilename, storeFileName);
+    }
+ 
+    private String createStoreFileName(String originalFilename) { 
+        String ext = extractExt(originalFilename);
+        String uuid = UUID.randomUUID().toString();
+        return uuid + "." + ext;
+    }
+
+    private String extractExt(String originalFilename) { 
+        int pos = originalFilename.lastIndexOf("."); 
+        return originalFilename.substring(pos + 1);
+    } 
+}
+```
+- ItemForm
+```java
+@Data
+public class ItemForm {
+    private Long itemId;
+    private String itemName;
+    private List<MultipartFile> imageFiles;
+    private MultipartFile attachFile;
+}
+```
+- ItemController
+```java
+@Slf4j
+@Controller
+@RequiredArgsConstructor
+public class ItemController {
+
+    private final ItemRepository itemRepository;
+    private final FileStore fileStore;
+
+    @GetMapping("/items/new")
+    public String newItem(@ModelAttribute ItemForm form) {
+        return "item-form"; 
+    }
+
+    @PostMapping("/items/new")
+    public String saveItem(@ModelAttribute ItemForm form, RedirectAttributes redirectAttributes) throws IOException {
+        
+    UploadFile attachFile = fileStore.storeFile(form.getAttachFile());
+    List<UploadFile> storeImageFiles = fileStore.storeFiles(form.getImageFiles());
+
+    //데이터 베이스에 저장
+    Item item = new Item(); 
+    item.setItemName(form.getItemName()); 
+    item.setAttachFile(attachFile); 
+    item.setImageFiles(storeImageFiles); 
+    itemRepository.save(item);
+    redirectAttributes.addAttribute("itemId", item.getId()); 
+    return "redirect:/items/{itemId}";
+    }
+    
+    @GetMapping("/items/{id}")
+    public String items(@PathVariable Long id, Model model) {
+        Item item = itemRepository.findById(id); 
+        model.addAttribute("item", item); 
+        return "item-view";
+    }
+    
+    @ResponseBody
+    @GetMapping("/images/{filename}")
+    public Resource downloadImage(@PathVariable String filename) throws MalformedURLException {
+        return new UrlResource("file:" + fileStore.getFullPath(filename));
+    }
+
+    @GetMapping("/attach/{itemId}")
+    public ResponseEntity<Resource> downloadAttach(@PathVariable Long itemId) throws MalformedURLException {
+
+        Item item = itemRepository.findById(itemId);
+        String storeFileName = item.getAttachFile().getStoreFileName(); 
+        String uploadFileName = item.getAttachFile().getUploadFileName();
+        UrlResource resource = new UrlResource("file:" + fileStore.getFullPath(storeFileName));
+        
+        log.info("uploadFileName={}", uploadFileName);
+        String encodedUploadFileName = UriUtils.encode(uploadFileName, StandardCharsets.UTF_8);
+        String contentDisposition = "attachment; filename=\"" + encodedUploadFileName + "\"";
+        return ResponseEntity.ok()
+               .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition) .body(resource);
+    }
+}
+```
+- item-form.html
+```html
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> 
+<head>
+<meta charset="utf-8"> 
+</head>
+<body>
+<div class="container">
+<div class="py-5 text-center">
+<h2>상품 등록</h2> </div>
+<form th:action method="post" enctype="multipart/form-data"> 
+    <ul>
+        <li>상품명 <input type="text" name="itemName"></li> 
+        <li>첨부파일<input type="file" name="attachFile" ></li> 
+        <li>이미지 파일들<input type="file" multiple="multiple" name="imageFiles" ></li>
+    </ul>
+    <input type="submit"/>
+</form>
+</div> <!-- /container --> 
+</body>
+</html>
+```
+- item-view.html
+```html
+ <!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org"> 
+<head>
+<meta charset="utf-8"> 
+</head>
+<body>
+<div class="container">
+    <div class="py-5 text-center">
+        <h2>상품 조회</h2> 
+    </div>
+    
+    상품명: <span th:text="${item.itemName}">상품명</span><br/>
+    첨부파일: <a th:if="${item.attachFile}" th:href="|/attach/${item.id}|" th:text="${item.getAttachFile().getUploadFileName()}" /><br/>
+    
+    <img th:each="imageFile : ${item.imageFiles}" th:src="|/images/$ {imageFile.getStoreFileName()}|" width="300" height="300"/>
+</div> <!-- /container --> 
+</body>
+</html>
+```
